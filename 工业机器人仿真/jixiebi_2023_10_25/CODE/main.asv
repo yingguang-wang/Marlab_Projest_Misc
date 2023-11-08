@@ -1,0 +1,150 @@
+% 本项目用于机械臂速度控制示例
+clc;
+clear all;
+%% 构建机械臂模型
+% 标准DH参数表
+%        theta    d            a        alpha      sigma    offset
+L1=Link([0       0.1698      0.0642     -pi/2       0        0     ],'standard'); 
+L2=Link([0       0           0.3150      0          0        0     ],'standard');
+L3=Link([0       0           0          -pi/2       0       -pi/2  ],'standard');
+L4=Link([0       0.2226      0           pi/2       0        pi/2  ],'standard');
+L5=Link([0       0           0          -pi/2       0        0     ],'standard');
+L6=Link([0       0.036       0           0          0        pi    ],'standard');   % 不考虑末端网杆
+armbot=SerialLink([L1,L2,L3,L4,L5,L6]);
+armbot.name='AR3';
+
+% 关节范围
+du=pi/180;
+L1.qlim=[-170 170]*du;
+L2.qlim=[-132 0]*du;
+L3.qlim=[1 141]*du;
+L4.qlim=[-165 165]*du;
+L5.qlim=[-105 +105]*du;
+L6.qlim=[-155 +155]*du;
+
+%% 轨迹规划
+% 当前位置
+% q_start = [50 -90 50 -90 0 90]*du;
+q_start = [0 -60 90 -85 0 0]*du;  
+T_start = armbot.fkine(q_start);
+
+% 目标位置
+% q_end = [90 -70 60 -60 90 60]*du;
+q_end=[90 -30 75 0 0  -180]*du; 
+T_end = armbot.fkine(q_end);
+
+dt = 0.1;
+T = 10;
+t = 0:dt:T;
+
+[x_d,v_d] = my_traj(T_start,T_end,t);   %定义轨迹路线
+
+
+%% 控制
+% 运行 -- 基于末端坐标系姿态
+
+%%初始化
+q = zeros(6,length(t));
+dq = zeros(6,length(t));
+q(:,1) = q_start';
+x = zeros(7,length(t));
+v = zeros(6,length(t));
+x(:,1) = x_d(:,1);   %3维空间位置 + 4维四元数
+
+delta_x = zeros(6,length(t));
+
+%%
+for i=1:length(t)-1
+    fprintf('第%d轮计算\n',i);
+
+    jacob_temp = armbot.jacob0(q(:,i)');   %雅可比矩阵
+    J0 = jacob_temp;
+    T0 = armbot.fkine(q(:,i)').t';
+    delta_x(1:3,i) = x(1:3,i)-x_d(1:3,i);                % 位置差
+
+    temp=UnitQuaternion(x(4:7,i)).inv()*UnitQuaternion(x_d(4:7,i));    % 四元数偏差-基于轴角（最符合物理意义） 
+    R_temp=UnitQuaternion(x(4:7,i)).R;  %旋转矩阵
+    delta_x(4:6,i)=-R_temp*2*acos(temp.s)*temp.v'/(norm(temp.v)+0.001);   %姿态差 怎么求
+
+    [dq(:,i)] = dq_solver(v_d(:,i),delta_x(:,i),jacob_temp,q(:,i));     % 逆映射求关节速度
+    %keyboard;
+
+    % 限幅
+    temp = dq(:,i);
+    temp(temp>30/180*pi) = 30*pi/180;  %-30度到30度，瞬时加速不能太大
+    temp(temp<-30/180*pi) = -30*pi/180;
+    dq(:,i) = temp;
+    q(:,i+1) = q(:,i)+dq(:,i)*dt;                          % 下一时刻关节角度
+    
+    T_temp = double(armbot.fkine(q(:,i+1)'));         
+    x(1:3,i+1) = T_temp(1:3,4);                                   % 存储末端位置
+    v(:,i) = jacob_temp*dq(:,i);                                   % 存储末端速度
+    x(4:7,i+1) = double(UnitQuaternion(T_temp(1:3,1:3)));         % 存储末端四元数
+end
+
+% 若未能到达指定位置，则后续用偏差驱动
+t_end = 500;
+for i=length(t):t_end
+    fprintf('第%d轮计算\n',i);
+    if i==300
+        pause(0.01);
+    end
+    
+    jacob_temp = armbot.jacob0(q(:,i)');
+    J0 = jacob_temp;
+    T0 = armbot.fkine(q(:,i)').t';
+    delta_x(1:3,i) = x(1:3,i)-x_d(1:3,length(t));                % 位置差
+
+    temp=UnitQuaternion(x(4:7,i)).inv()*UnitQuaternion(x_d(4:7,length(t)));    % 四元数偏差-基于轴角（最符合物理意义） 
+    R_temp=UnitQuaternion(x(4:7,i)).R;
+    delta_x(4:6,i)=-R_temp*2*acos(temp.s)*temp.v'/(norm(temp.v)+0.001);
+    
+
+    [dq(:,i)] = dq_solver(zeros(6,1),delta_x(:,i),jacob_temp,q(:,i));     % 逆映射求关节速度
+    
+    % 限幅
+    temp = dq(:,i);
+    temp(temp>30/180*pi) = 30*pi/180;
+    temp(temp<-30/180*pi) = -30*pi/180;
+    dq(:,i) = temp;
+    q(:,i+1) = q(:,i)+dq(:,i)*dt;                          % 下一时刻关节角度
+    
+    T_temp = double(armbot.fkine(q(:,i+1)'));         
+    x(1:3,i+1) = T_temp(1:3,4);                                   % 存储末端位置
+    v(:,i) = jacob_temp*dq(:,i);                                   % 存储末端速度
+    x(4:7,i+1) = double(UnitQuaternion(T_temp(1:3,1:3)));         % 存储末端四元数
+
+    if norm(delta_x(:,i))<0.01
+        t_end = i;
+        break;
+    end 
+end
+
+du = pi/180;
+figure(2);
+subplot(2,2,1);
+[~,m] = size(q);
+plot(1:m,q/du);
+legend('q1','q2','q3','q4','q5','q6');
+title('q');
+
+subplot(2,2,2);
+[~,m] = size(dq);
+plot(1:m,dq/du);
+legend('dq1','dq2','dq3','dq4','dq5','dq6');
+title("dq");
+
+subplot(2,2,3);
+[~,m] = size(x);
+plot(1:m,x(1:3,:));
+legend('x','y','z');
+title('p');
+
+subplot(2,2,4);
+[~,m] = size(v);
+plot(1:m,v(1:3,:));
+legend('vx','vy','vz');
+title('dp');
+
+figure(3)
+armbot.plot(q')
