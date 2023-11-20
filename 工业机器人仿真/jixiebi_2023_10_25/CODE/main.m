@@ -1,6 +1,7 @@
 % 本项目用于机械臂速度控制示例
 clc;
-clear all;
+%clear all;
+clear;
 %% 构建机械臂模型
 % 标准DH参数表
 %        theta    d            a        alpha      sigma    offset
