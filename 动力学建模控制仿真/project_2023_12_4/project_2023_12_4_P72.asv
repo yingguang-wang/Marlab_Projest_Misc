@@ -1,0 +1,17 @@
+clc
+m1 = 10;
+k1 = 10;
+u = 1 / 20;
+m2 = u * m1;
+k2 = u * k1;
+cl = 0,0;
+pl = sqrt(k1 / m1);
+for i = 0:1:5
+    c2 = 0.12 * i;
+    h1 = conv([m1,c2,k1+k2],[m2,c2,k2]);
+    den = h1 - h2;
+    num = [m2,c2,k2];
+    w = 0.5:0.01:0.5*pi;
+    gw = polyval(num,j*w)./polyval(den,j*w);
+    mag = abs(gw);
+    
